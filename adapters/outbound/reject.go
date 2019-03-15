@@ -8,42 +8,27 @@ import (
 	C "github.com/Dreamacro/clash/constant"
 )
 
-// RejectAdapter is a reject connected adapter
-type RejectAdapter struct {
-	conn net.Conn
-}
-
-// Close is used to close connection
-func (r *RejectAdapter) Close() {}
-
-// Conn is used to http request
-func (r *RejectAdapter) Conn() net.Conn {
-	return r.conn
-}
-
 type Reject struct {
+	*Base
 }
 
-func (r *Reject) Name() string {
-	return "REJECT"
-}
-
-func (r *Reject) Type() C.AdapterType {
-	return C.Reject
-}
-
-func (r *Reject) Generator(metadata *C.Metadata) (adapter C.ProxyAdapter, err error) {
-	return &RejectAdapter{conn: &NopConn{}}, nil
+func (r *Reject) Generator(metadata *C.Metadata) (net.Conn, error) {
+	return &NopConn{}, nil
 }
 
 func NewReject() *Reject {
-	return &Reject{}
+	return &Reject{
+		Base: &Base{
+			name: "REJECT",
+			tp:   C.Reject,
+		},
+	}
 }
 
 type NopConn struct{}
 
 func (rw *NopConn) Read(b []byte) (int, error) {
-	return len(b), nil
+	return 0, io.EOF
 }
 
 func (rw *NopConn) Write(b []byte) (int, error) {

@@ -1,7 +1,9 @@
 package adapters
 
 import (
+	"encoding/json"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -14,7 +16,7 @@ type proxy struct {
 }
 
 type Fallback struct {
-	name     string
+	*Base
 	proxies  []*proxy
 	rawURL   string
 	interval time.Duration
@@ -28,14 +30,6 @@ type FallbackOption struct {
 	Interval int      `proxy:"interval"`
 }
 
-func (f *Fallback) Name() string {
-	return f.name
-}
-
-func (f *Fallback) Type() C.AdapterType {
-	return C.Fallback
-}
-
 func (f *Fallback) Now() string {
 	_, proxy := f.findNextValidProxy(0)
 	if proxy != nil {
@@ -44,7 +38,7 @@ func (f *Fallback) Now() string {
 	return f.proxies[0].RawProxy.Name()
 }
 
-func (f *Fallback) Generator(metadata *C.Metadata) (adapter C.ProxyAdapter, err error) {
+func (f *Fallback) Generator(metadata *C.Metadata) (net.Conn, error) {
 	idx := 0
 	var proxy *proxy
 	for {
@@ -52,15 +46,27 @@ func (f *Fallback) Generator(metadata *C.Metadata) (adapter C.ProxyAdapter, err 
 		if proxy == nil {
 			break
 		}
-		adapter, err = proxy.RawProxy.Generator(metadata)
+		adapter, err := proxy.RawProxy.Generator(metadata)
 		if err != nil {
 			proxy.Valid = false
 			idx++
 			continue
 		}
-		return
+		return adapter, err
 	}
 	return f.proxies[0].RawProxy.Generator(metadata)
+}
+
+func (f *Fallback) MarshalJSON() ([]byte, error) {
+	var all []string
+	for _, proxy := range f.proxies {
+		all = append(all, proxy.RawProxy.Name())
+	}
+	return json.Marshal(map[string]interface{}{
+		"type": f.Type().String(),
+		"now":  f.Now(),
+		"all":  all,
+	})
 }
 
 func (f *Fallback) Close() {
@@ -125,7 +131,10 @@ func NewFallback(option FallbackOption, proxies []C.Proxy) (*Fallback, error) {
 	}
 
 	Fallback := &Fallback{
-		name:     option.Name,
+		Base: &Base{
+			name: option.Name,
+			tp:   C.Fallback,
+		},
 		proxies:  warpperProxies,
 		rawURL:   option.URL,
 		interval: interval,

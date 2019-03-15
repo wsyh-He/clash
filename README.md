@@ -1,11 +1,9 @@
 <h1 align="center">
   <img src="https://github.com/Dreamacro/clash/raw/master/docs/logo.png" alt="Clash" width="200">
-  <br>
-  Clash
-  <br>
+  <br>Clash<br>
 </h1>
 
-<h4 align="center">A rule based tunnel in Go.</h4>
+<h4 align="center">A rule-based tunnel in Go.</h4>
 
 <p align="center">
   <a href="https://travis-ci.org/Dreamacro/clash">
@@ -13,7 +11,7 @@
          alt="Travis-CI">
   </a>
   <a href="https://goreportcard.com/report/github.com/Dreamacro/clash">
-      <img src="https://goreportcard.com/badge/github.com/Dreamacro/clash?style=flat-square">
+    <img src="https://goreportcard.com/badge/github.com/Dreamacro/clash?style=flat-square">
   </a>
   <a href="https://github.com/Dreamacro/clash/releases">
     <img src="https://img.shields.io/github/release/Dreamacro/clash/all.svg?style=flat-square">
@@ -38,7 +36,7 @@ go get -u -v github.com/Dreamacro/clash
 
 Pre-built binaries are available: [release](https://github.com/Dreamacro/clash/releases)
 
-Requires Go >= 1.10.
+Requires Go >= 1.11.
 
 ## Daemon
 
@@ -57,8 +55,6 @@ If you have Docker installed, you can run clash directly using `docker-compose`.
 [Run clash in docker](https://github.com/Dreamacro/clash/wiki/Run-clash-in-docker)
 
 ## Config
-
-**NOTE: after v0.8.0, clash using yaml as configuration file**
 
 The default configuration directory is `$HOME/.config/clash`
 
@@ -90,14 +86,29 @@ allow-lan: false
 mode: Rule
 
 # set log level to stdout (default is info)
-# info / warning / error / debug
+# info / warning / error / debug / silent
 log-level: info
 
 # A RESTful API for clash
 external-controller: 127.0.0.1:9090
 
+# you can put the static web resource (such as clash-dashboard) to a directory, and clash would serve in `${API}/ui`
+# input is a relative path to the configuration directory or an absolute path
+# external-ui: folder
+
 # Secret for RESTful API (Optional)
 # secret: ""
+
+# dns:
+  # enable: true # set true to enable dns (default is false)
+  # ipv6: false # default is false
+  # listen: 0.0.0.0:53
+  # enhanced-mode: redir-host
+  # nameserver:
+  #   - 114.114.114.114
+  #   - tls://dns.rubyfish.cn:853 # dns over tls
+  # fallback: # concurrent request with nameserver, fallback used when GEOIP country isn't CN
+  #   - 8.8.8.8
 
 Proxy:
 
@@ -106,7 +117,32 @@ Proxy:
 # support AEAD_AES_128_GCM AEAD_AES_192_GCM AEAD_AES_256_GCM AEAD_CHACHA20_POLY1305 AES-128-CTR AES-192-CTR AES-256-CTR AES-128-CFB AES-192-CFB AES-256-CFB CHACHA20-IETF XCHACHA20
 # In addition to what go-shadowsocks2 supports, it also supports chacha20 rc4-md5 xchacha20-ietf-poly1305
 - { name: "ss1", type: ss, server: server, port: 443, cipher: AEAD_CHACHA20_POLY1305, password: "password" }
-- { name: "ss2", type: ss, server: server, port: 443, cipher: AEAD_CHACHA20_POLY1305, password: "password", obfs: tls, obfs-host: bing.com }
+
+# old obfs configuration remove after prerelease
+- name: "ss2"
+  type: ss
+  server: server
+  port: 443
+  cipher: AEAD_CHACHA20_POLY1305
+  password: "password"
+  plugin: obfs
+  plugin-opts:
+    mode: tls # or http
+    # host: bing.com
+
+- name: "ss3"
+  type: ss
+  server: server
+  port: 443
+  cipher: AEAD_CHACHA20_POLY1305
+  password: "password"
+  plugin: v2ray-plugin
+  plugin-opts:
+    mode: websocket # no QUIC now
+    # tls: true # wss
+    # skip-cert-verify: true
+    # host: bing.com
+    # path: "/"
 
 # vmess
 # cipher support auto/aes-128-gcm/chacha20-poly1305/none
@@ -115,38 +151,54 @@ Proxy:
 - { name: "vmess", type: vmess, server: server, port: 443, uuid: uuid, alterId: 32, cipher: auto, tls: true }
 # with tls and skip-cert-verify
 - { name: "vmess", type: vmess, server: server, port: 443, uuid: uuid, alterId: 32, cipher: auto, tls: true, skip-cert-verify: true }
-# with ws
-- { name: "vmess", type: vmess, server: server, port: 443, uuid: uuid, alterId: 32, cipher: auto, network: ws, ws-path: /path }
+# with ws-path and ws-headers
+- { name: "vmess", type: vmess, server: server, port: 443, uuid: uuid, alterId: 32, cipher: auto, network: ws, ws-path: /path, ws-headers: { Host: v2ray.com } }
 # with ws + tls
 - { name: "vmess", type: vmess, server: server, port: 443, uuid: uuid, alterId: 32, cipher: auto, network: ws, ws-path: /path, tls: true }
 
 # socks5
 - { name: "socks", type: socks5, server: server, port: 443 }
+# socks5 with authentication
+- { name: "socks", type: socks5, server: server, port: 443, username: "username", password: "password" }
 # with tls
 - { name: "socks", type: socks5, server: server, port: 443, tls: true }
 # with tls and skip-cert-verify
 - { name: "socks", type: socks5, server: server, port: 443, tls: true, skip-cert-verify: true }
 
+# http
+- { name: "http", type: http, server: server, port: 443 }
+# http with authentication
+- { name: "http", type: http, server: server, port: 443, username: "username", password: "password" }
+# with tls (https)
+- { name: "http", type: http, server: server, port: 443, tls: true }
+# with tls (https) and skip-cert-verify
+- { name: "http", type: http, server: server, port: 443, tls: true, skip-cert-verify: true }
+
 Proxy Group:
 # url-test select which proxy will be used by benchmarking speed to a URL.
-- { name: "auto", type: url-test, proxies: ["ss1", "ss2", "vmess1"], url: http://www.gstatic.com/generate_204, interval: 300 }
+- { name: "auto", type: url-test, proxies: ["ss1", "ss2", "vmess1"], url: "http://www.gstatic.com/generate_204", interval: 300 }
 
 # fallback select an available policy by priority. The availability is tested by accessing an URL, just like an auto url-test group.
-- { name: "fallback-auto", type: fallback, proxies: ["ss1", "ss2", "vmess1"], url: http://www.gstatic.com/generate_204, interval: 300 }
+- { name: "fallback-auto", type: fallback, proxies: ["ss1", "ss2", "vmess1"], url: "http://www.gstatic.com/generate_204", interval: 300 }
+
+# load-balance: The request of the same eTLD will be dial on the same proxy.
+- { name: "load-balance", type: load-balance, proxies: ["ss1", "ss2", "vmess1"] }
 
 # select is used for selecting proxy or proxy group
 # you can use RESTful API to switch proxy, is recommended for use in GUI.
 - { name: "Proxy", type: select, proxies: ["ss1", "ss2", "vmess1", "auto"] }
 
 Rule:
-- DOMAIN-SUFFIX,google.com,Proxy
-- DOMAIN-KEYWORD,google,Proxy
-- DOMAIN,google.com,Proxy
+- DOMAIN-SUFFIX,google.com,auto
+- DOMAIN-KEYWORD,google,auto
+- DOMAIN,google.com,auto
 - DOMAIN-SUFFIX,ad.com,REJECT
 - IP-CIDR,127.0.0.0/8,DIRECT
+- SOURCE-IP-CIDR,192.168.1.201/32,DIRECT
 - GEOIP,CN,DIRECT
-# note: there is two ","
-- FINAL,,Proxy
+# FINAL would remove after prerelease
+# you also can use `FINAL,Proxy` or `FINAL,,Proxy` now
+- MATCH,auto
 ```
 
 ## Thanks

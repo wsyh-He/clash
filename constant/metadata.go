@@ -15,6 +15,7 @@ const (
 
 	HTTP SourceType = iota
 	SOCKS
+	REDIR
 )
 
 type NetWork int
@@ -32,15 +33,20 @@ type SourceType int
 type Metadata struct {
 	NetWork  NetWork
 	Source   SourceType
+	SourceIP *net.IP
 	AddrType int
 	Host     string
 	IP       *net.IP
 	Port     string
 }
 
-func (addr *Metadata) String() string {
-	if addr.Host == "" {
-		return addr.IP.String()
+func (m *Metadata) String() string {
+	if m.Host == "" {
+		return m.IP.String()
 	}
-	return addr.Host
+	return m.Host
+}
+
+func (m *Metadata) Valid() bool {
+	return m.Host != "" || m.IP != nil
 }

@@ -6,35 +6,33 @@ import (
 	"net/http"
 
 	"github.com/Dreamacro/clash/adapters/inbound"
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/Dreamacro/clash/log"
 	"github.com/Dreamacro/clash/tunnel"
-
-	log "github.com/sirupsen/logrus"
 )
 
 var (
 	tun = tunnel.Instance()
 )
 
-func NewHttpProxy(addr string) (*C.ProxySignal, error) {
+type HttpListener struct {
+	net.Listener
+	address string
+	closed  bool
+}
+
+func NewHttpProxy(addr string) (*HttpListener, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-
-	done := make(chan struct{})
-	closed := make(chan struct{})
-	signal := &C.ProxySignal{
-		Done:   done,
-		Closed: closed,
-	}
+	hl := &HttpListener{l, addr, false}
 
 	go func() {
-		log.Infof("HTTP proxy listening at: %s", addr)
+		log.Infoln("HTTP proxy listening at: %s", addr)
 		for {
-			c, err := l.Accept()
+			c, err := hl.Accept()
 			if err != nil {
-				if _, open := <-done; !open {
+				if hl.closed {
 					break
 				}
 				continue
@@ -43,14 +41,16 @@ func NewHttpProxy(addr string) (*C.ProxySignal, error) {
 		}
 	}()
 
-	go func() {
-		<-done
-		close(done)
-		l.Close()
-		closed <- struct{}{}
-	}()
+	return hl, nil
+}
 
-	return signal, nil
+func (l *HttpListener) Close() {
+	l.closed = true
+	l.Listener.Close()
+}
+
+func (l *HttpListener) Address() string {
+	return l.address
 }
 
 func handleConn(conn net.Conn) {

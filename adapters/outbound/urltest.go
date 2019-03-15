@@ -1,7 +1,10 @@
 package adapters
 
 import (
+	"encoding/json"
 	"errors"
+	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,7 +13,7 @@ import (
 )
 
 type URLTest struct {
-	name     string
+	*Base
 	proxies  []C.Proxy
 	rawURL   string
 	fast     C.Proxy
@@ -26,24 +29,29 @@ type URLTestOption struct {
 	Interval int      `proxy:"interval"`
 }
 
-func (u *URLTest) Name() string {
-	return u.name
-}
-
-func (u *URLTest) Type() C.AdapterType {
-	return C.URLTest
-}
-
 func (u *URLTest) Now() string {
 	return u.fast.Name()
 }
 
-func (u *URLTest) Generator(metadata *C.Metadata) (adapter C.ProxyAdapter, err error) {
+func (u *URLTest) Generator(metadata *C.Metadata) (net.Conn, error) {
 	a, err := u.fast.Generator(metadata)
 	if err != nil {
 		go u.speedTest()
 	}
 	return a, err
+}
+
+func (u *URLTest) MarshalJSON() ([]byte, error) {
+	var all []string
+	for _, proxy := range u.proxies {
+		all = append(all, proxy.Name())
+	}
+	sort.Strings(all)
+	return json.Marshal(map[string]interface{}{
+		"type": u.Type().String(),
+		"now":  u.Now(),
+		"all":  all,
+	})
 }
 
 func (u *URLTest) Close() {
@@ -113,7 +121,10 @@ func NewURLTest(option URLTestOption, proxies []C.Proxy) (*URLTest, error) {
 
 	interval := time.Duration(option.Interval) * time.Second
 	urlTest := &URLTest{
-		name:     option.Name,
+		Base: &Base{
+			name: option.Name,
+			tp:   C.URLTest,
+		},
 		proxies:  proxies[:],
 		rawURL:   option.URL,
 		fast:     proxies[0],

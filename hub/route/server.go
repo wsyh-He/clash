@@ -1,4 +1,4 @@
-package hub
+package route
 
 import (
 	"encoding/json"
@@ -6,65 +6,75 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Dreamacro/clash/config"
-	C "github.com/Dreamacro/clash/constant"
+	"github.com/Dreamacro/clash/log"
 	T "github.com/Dreamacro/clash/tunnel"
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/cors"
 	"github.com/go-chi/render"
-	log "github.com/sirupsen/logrus"
 )
 
-var secret = ""
+var (
+	serverSecret = ""
+	serverAddr   = ""
+
+	uiPath = ""
+)
 
 type Traffic struct {
 	Up   int64 `json:"up"`
 	Down int64 `json:"down"`
 }
 
-func newHub(signal chan struct{}) {
-	var addr string
-	ch := config.Instance().Subscribe()
-	signal <- struct{}{}
-	count := 0
-	for {
-		elm := <-ch
-		event := elm.(*config.Event)
-		switch event.Type {
-		case "external-controller":
-			addr = event.Payload.(string)
-			count++
-		case "secret":
-			secret = event.Payload.(string)
-			count++
-		}
-		if count == 2 {
-			break
-		}
+func SetUIPath(path string) {
+	uiPath = path
+}
+
+func Start(addr string, secret string) {
+	if serverAddr != "" {
+		return
 	}
+
+	serverAddr = addr
+	serverSecret = secret
 
 	r := chi.NewRouter()
 
 	cors := cors.New(cors.Options{
 		AllowedOrigins: []string{"*"},
-		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
 		AllowedHeaders: []string{"Content-Type", "Authorization"},
 		MaxAge:         300,
 	})
 
-	r.Use(cors.Handler, authentication)
+	root := chi.NewRouter().With(jsonContentType)
+	root.Get("/traffic", traffic)
+	root.Get("/logs", getLogs)
 
-	r.With(jsonContentType).Get("/traffic", traffic)
-	r.With(jsonContentType).Get("/logs", getLogs)
-	r.Mount("/configs", configRouter())
-	r.Mount("/proxies", proxyRouter())
-	r.Mount("/rules", ruleRouter())
+	r.Get("/", hello)
+	r.Group(func(r chi.Router) {
+		r.Use(cors.Handler, authentication)
 
-	log.Infof("RESTful API listening at: %s", addr)
+		r.Mount("/", root)
+		r.Mount("/configs", configRouter())
+		r.Mount("/proxies", proxyRouter())
+		r.Mount("/rules", ruleRouter())
+	})
+
+	if uiPath != "" {
+		r.Group(func(r chi.Router) {
+			fs := http.StripPrefix("/ui", http.FileServer(http.Dir(uiPath)))
+			r.Get("/ui", http.RedirectHandler("/ui/", 301).ServeHTTP)
+			r.Get("/ui/*", func(w http.ResponseWriter, r *http.Request) {
+				fs.ServeHTTP(w, r)
+			})
+		})
+	}
+
+	log.Infoln("RESTful API listening at: %s", addr)
 	err := http.ListenAndServe(addr, r)
 	if err != nil {
-		log.Errorf("External controller error: %s", err.Error())
+		log.Errorln("External controller error: %s", err.Error())
 	}
 }
 
@@ -81,18 +91,16 @@ func authentication(next http.Handler) http.Handler {
 		header := r.Header.Get("Authorization")
 		text := strings.SplitN(header, " ", 2)
 
-		if secret == "" {
+		if serverSecret == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		hasUnvalidHeader := text[0] != "Bearer"
-		hasUnvalidSecret := len(text) == 2 && text[1] != secret
+		hasUnvalidSecret := len(text) == 2 && text[1] != serverSecret
 		if hasUnvalidHeader || hasUnvalidSecret {
-			w.WriteHeader(http.StatusUnauthorized)
-			render.JSON(w, r, Error{
-				Error: "Authentication failed",
-			})
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, ErrUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -100,17 +108,15 @@ func authentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(fn)
 }
 
-type contextKey string
-
-func (c contextKey) String() string {
-	return "clash context key " + string(c)
+func hello(w http.ResponseWriter, r *http.Request) {
+	render.JSON(w, r, render.M{"hello": "clash"})
 }
 
 func traffic(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
+	render.Status(r, http.StatusOK)
 
 	tick := time.NewTicker(time.Second)
-	t := tunnel.Traffic()
+	t := T.Instance().Traffic()
 	for range tick.C {
 		up, down := t.Now()
 		if err := json.NewEncoder(w).Encode(Traffic{
@@ -134,29 +140,18 @@ func getLogs(w http.ResponseWriter, r *http.Request) {
 		levelText = "info"
 	}
 
-	level, ok := C.LogLevelMapping[levelText]
+	level, ok := log.LogLevelMapping[levelText]
 	if !ok {
-		w.WriteHeader(http.StatusBadRequest)
-		render.JSON(w, r, Error{
-			Error: "Level error",
-		})
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrBadRequest)
 		return
 	}
 
-	src := tunnel.Log()
-	sub, err := src.Subscribe()
-	defer src.UnSubscribe(sub)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		render.JSON(w, r, Error{
-			Error: err.Error(),
-		})
-		return
-	}
+	sub := log.Subscribe()
 	render.Status(r, http.StatusOK)
 	for elm := range sub {
-		log := elm.(T.Log)
-		if log.LogLevel > level {
+		log := elm.(*log.Event)
+		if log.LogLevel < level {
 			continue
 		}
 
@@ -168,11 +163,4 @@ func getLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		w.(http.Flusher).Flush()
 	}
-}
-
-// Run initial hub
-func Run() {
-	signal := make(chan struct{})
-	go newHub(signal)
-	<-signal
 }

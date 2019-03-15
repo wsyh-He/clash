@@ -5,35 +5,35 @@ import (
 
 	"github.com/Dreamacro/clash/adapters/inbound"
 	C "github.com/Dreamacro/clash/constant"
+	"github.com/Dreamacro/clash/log"
 	"github.com/Dreamacro/clash/tunnel"
 
 	"github.com/Dreamacro/go-shadowsocks2/socks"
-	log "github.com/sirupsen/logrus"
 )
 
 var (
 	tun = tunnel.Instance()
 )
 
-func NewSocksProxy(addr string) (*C.ProxySignal, error) {
+type SockListener struct {
+	net.Listener
+	address string
+	closed  bool
+}
+
+func NewSocksProxy(addr string) (*SockListener, error) {
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
 
-	done := make(chan struct{})
-	closed := make(chan struct{})
-	signal := &C.ProxySignal{
-		Done:   done,
-		Closed: closed,
-	}
-
+	sl := &SockListener{l, addr, false}
 	go func() {
-		log.Infof("SOCKS proxy listening at: %s", addr)
+		log.Infoln("SOCKS proxy listening at: %s", addr)
 		for {
 			c, err := l.Accept()
 			if err != nil {
-				if _, open := <-done; !open {
+				if sl.closed {
 					break
 				}
 				continue
@@ -42,14 +42,16 @@ func NewSocksProxy(addr string) (*C.ProxySignal, error) {
 		}
 	}()
 
-	go func() {
-		<-done
-		close(done)
-		l.Close()
-		closed <- struct{}{}
-	}()
+	return sl, nil
+}
 
-	return signal, nil
+func (l *SockListener) Close() {
+	l.closed = true
+	l.Listener.Close()
+}
+
+func (l *SockListener) Address() string {
+	return l.address
 }
 
 func handleSocks(conn net.Conn) {
@@ -59,5 +61,5 @@ func handleSocks(conn net.Conn) {
 		return
 	}
 	conn.(*net.TCPConn).SetKeepAlive(true)
-	tun.Add(adapters.NewSocket(target, conn))
+	tun.Add(adapters.NewSocket(target, conn, C.SOCKS))
 }

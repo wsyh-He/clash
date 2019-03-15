@@ -1,17 +1,15 @@
 package main
 
 import (
+	"flag"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
-	"flag"
-	"path"
 
 	"github.com/Dreamacro/clash/config"
-	"github.com/Dreamacro/clash/hub"
-	"github.com/Dreamacro/clash/proxy"
-	"github.com/Dreamacro/clash/tunnel"
 	C "github.com/Dreamacro/clash/constant"
+	"github.com/Dreamacro/clash/hub"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -26,21 +24,19 @@ func init() {
 }
 
 func main() {
-	tunnel.Instance().Run()
-	proxy.Instance().Run()
-	hub.Run()
-
-	if (homedir != "") {
-		if !path.IsAbs(homedir) {
+	if homedir != "" {
+		if !filepath.IsAbs(homedir) {
 			currentDir, _ := os.Getwd()
-			homedir = path.Join(currentDir, homedir)
+			homedir = filepath.Join(currentDir, homedir)
 		}
 		C.SetHomeDir(homedir)
 	}
 
-	config.Init()
-	err := config.Instance().Parse()
-	if err != nil {
+	if err := config.Init(C.Path.HomeDir()); err != nil {
+		log.Fatalf("Initial configuration directory error: %s", err.Error())
+	}
+
+	if err := hub.Parse(); err != nil {
 		log.Fatalf("Parse config error: %s", err.Error())
 	}
 

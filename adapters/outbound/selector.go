@@ -1,14 +1,16 @@
 package adapters
 
 import (
+	"encoding/json"
 	"errors"
+	"net"
 	"sort"
 
 	C "github.com/Dreamacro/clash/constant"
 )
 
 type Selector struct {
-	name     string
+	*Base
 	selected C.Proxy
 	proxies  map[string]C.Proxy
 }
@@ -18,29 +20,25 @@ type SelectorOption struct {
 	Proxies []string `proxy:"proxies"`
 }
 
-func (s *Selector) Name() string {
-	return s.name
-}
-
-func (s *Selector) Type() C.AdapterType {
-	return C.Selector
-}
-
-func (s *Selector) Generator(metadata *C.Metadata) (adapter C.ProxyAdapter, err error) {
+func (s *Selector) Generator(metadata *C.Metadata) (net.Conn, error) {
 	return s.selected.Generator(metadata)
 }
 
-func (s *Selector) Now() string {
-	return s.selected.Name()
-}
-
-func (s *Selector) All() []string {
+func (s *Selector) MarshalJSON() ([]byte, error) {
 	var all []string
 	for k := range s.proxies {
 		all = append(all, k)
 	}
 	sort.Strings(all)
-	return all
+	return json.Marshal(map[string]interface{}{
+		"type": s.Type().String(),
+		"now":  s.Now(),
+		"all":  all,
+	})
+}
+
+func (s *Selector) Now() string {
+	return s.selected.Name()
 }
 
 func (s *Selector) Set(name string) error {
@@ -63,7 +61,10 @@ func NewSelector(name string, proxies []C.Proxy) (*Selector, error) {
 	}
 
 	s := &Selector{
-		name:     name,
+		Base: &Base{
+			name: name,
+			tp:   C.Selector,
+		},
 		proxies:  mapping,
 		selected: proxies[0],
 	}

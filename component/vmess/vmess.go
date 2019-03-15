@@ -69,21 +69,23 @@ type Client struct {
 	security  Security
 	tls       bool
 	host      string
-	wsConfig  *websocketConfig
+	wsConfig  *WebsocketConfig
 	tlsConfig *tls.Config
 }
 
 // Config of vmess
 type Config struct {
-	UUID           string
-	AlterID        uint16
-	Security       string
-	TLS            bool
-	Host           string
-	NetWork        string
-	WebSocketPath  string
-	SkipCertVerify bool
-	SessionCacahe  tls.ClientSessionCache
+	UUID             string
+	AlterID          uint16
+	Security         string
+	TLS              bool
+	HostName         string
+	Port             string
+	NetWork          string
+	WebSocketPath    string
+	WebSocketHeaders map[string]string
+	SkipCertVerify   bool
+	SessionCacahe    tls.ClientSessionCache
 }
 
 // New return a Conn with net.Conn and DstAddr
@@ -91,14 +93,14 @@ func (c *Client) New(conn net.Conn, dst *DstAddr) (net.Conn, error) {
 	var err error
 	r := rand.Intn(len(c.user))
 	if c.wsConfig != nil {
-		conn, err = newWebsocketConn(conn, c.wsConfig)
+		conn, err = NewWebsocketConn(conn, c.wsConfig)
 		if err != nil {
 			return nil, err
 		}
 	} else if c.tls {
 		conn = tls.Client(conn, c.tlsConfig)
 	}
-	return newConn(conn, c.user[r], dst, c.security), nil
+	return newConn(conn, c.user[r], dst, c.security)
 }
 
 // NewClient return Client instance
@@ -129,9 +131,12 @@ func NewClient(config Config) (*Client, error) {
 		return nil, fmt.Errorf("Unknown network type: %s", config.NetWork)
 	}
 
+	host := net.JoinHostPort(config.HostName, config.Port)
+
 	var tlsConfig *tls.Config
 	if config.TLS {
 		tlsConfig = &tls.Config{
+			ServerName:         config.HostName,
 			InsecureSkipVerify: config.SkipCertVerify,
 			ClientSessionCache: config.SessionCacahe,
 		}
@@ -140,13 +145,14 @@ func NewClient(config Config) (*Client, error) {
 		}
 	}
 
-	var wsConfig *websocketConfig
+	var wsConfig *WebsocketConfig
 	if config.NetWork == "ws" {
-		wsConfig = &websocketConfig{
-			host:      config.Host,
-			path:      config.WebSocketPath,
-			tls:       config.TLS,
-			tlsConfig: tlsConfig,
+		wsConfig = &WebsocketConfig{
+			Host:      host,
+			Path:      config.WebSocketPath,
+			Headers:   config.WebSocketHeaders,
+			TLS:       config.TLS,
+			TLSConfig: tlsConfig,
 		}
 	}
 
@@ -155,7 +161,7 @@ func NewClient(config Config) (*Client, error) {
 		uuid:      &uid,
 		security:  security,
 		tls:       config.TLS,
-		host:      config.Host,
+		host:      host,
 		wsConfig:  wsConfig,
 		tlsConfig: tlsConfig,
 	}, nil

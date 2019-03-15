@@ -3,94 +3,85 @@ package config
 import (
 	"fmt"
 	"io/ioutil"
+	"net"
+	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
-	"sync"
-	"time"
 
 	adapters "github.com/Dreamacro/clash/adapters/outbound"
-	"github.com/Dreamacro/clash/common/observable"
 	"github.com/Dreamacro/clash/common/structure"
 	C "github.com/Dreamacro/clash/constant"
+	"github.com/Dreamacro/clash/dns"
+	"github.com/Dreamacro/clash/log"
 	R "github.com/Dreamacro/clash/rules"
+	T "github.com/Dreamacro/clash/tunnel"
 
-	log "github.com/sirupsen/logrus"
 	yaml "gopkg.in/yaml.v2"
-)
-
-var (
-	config *Config
-	once   sync.Once
 )
 
 // General config
 type General struct {
-	Port      int
-	SocksPort int
-	RedirPort int
-	AllowLan  bool
-	Mode      Mode
-	LogLevel  C.LogLevel
+	Port               int          `json:"port"`
+	SocksPort          int          `json:"socks-port"`
+	RedirPort          int          `json:"redir-port"`
+	AllowLan           bool         `json:"allow-lan"`
+	Mode               T.Mode       `json:"mode"`
+	LogLevel           log.LogLevel `json:"log-level"`
+	ExternalController string       `json:"-"`
+	ExternalUI         string       `json:"-"`
+	Secret             string       `json:"-"`
 }
 
-// ProxyConfig is update proxy schema
-type ProxyConfig struct {
-	Port      *int
-	SocksPort *int
-	RedirPort *int
-	AllowLan  *bool
+// DNS config
+type DNS struct {
+	Enable       bool             `yaml:"enable"`
+	IPv6         bool             `yaml:"ipv6"`
+	NameServer   []dns.NameServer `yaml:"nameserver"`
+	Fallback     []dns.NameServer `yaml:"fallback"`
+	Listen       string           `yaml:"listen"`
+	EnhancedMode dns.EnhancedMode `yaml:"enhanced-mode"`
 }
 
-// RawConfig is raw config struct
-type RawConfig struct {
-	Port               int    `yaml:"port"`
-	SocksPort          int    `yaml:"socks-port"`
-	RedirPort          int    `yaml:"redir-port"`
-	AllowLan           bool   `yaml:"allow-lan"`
-	Mode               string `yaml:"mode"`
-	LogLevel           string `yaml:"log-level"`
-	ExternalController string `yaml:"external-controller"`
-	Secret             string `yaml:"secret"`
+// Config is clash config manager
+type Config struct {
+	General *General
+	DNS     *DNS
+	Rules   []C.Rule
+	Proxies map[string]C.Proxy
+}
 
+type rawDNS struct {
+	Enable       bool             `yaml:"enable"`
+	IPv6         bool             `yaml:"ipv6"`
+	NameServer   []string         `yaml:"nameserver"`
+	Fallback     []string         `yaml:"fallback"`
+	Listen       string           `yaml:"listen"`
+	EnhancedMode dns.EnhancedMode `yaml:"enhanced-mode"`
+}
+
+type rawConfig struct {
+	Port               int          `yaml:"port"`
+	SocksPort          int          `yaml:"socks-port"`
+	RedirPort          int          `yaml:"redir-port"`
+	AllowLan           bool         `yaml:"allow-lan"`
+	Mode               T.Mode       `yaml:"mode"`
+	LogLevel           log.LogLevel `yaml:"log-level"`
+	ExternalController string       `yaml:"external-controller"`
+	ExternalUI         string       `yaml:"external-ui"`
+	Secret             string       `yaml:"secret"`
+
+	DNS        rawDNS                   `yaml:"dns"`
 	Proxy      []map[string]interface{} `yaml:"Proxy"`
 	ProxyGroup []map[string]interface{} `yaml:"Proxy Group"`
 	Rule       []string                 `yaml:"Rule"`
 }
 
-// Config is clash config manager
-type Config struct {
-	general    *General
-	rules      []C.Rule
-	proxies    map[string]C.Proxy
-	lastUpdate time.Time
-
-	event      chan<- interface{}
-	reportCh   chan interface{}
-	observable *observable.Observable
-}
-
-// Event is event of clash config
-type Event struct {
-	Type    string
-	Payload interface{}
-}
-
-// Subscribe config stream
-func (c *Config) Subscribe() observable.Subscription {
-	sub, _ := c.observable.Subscribe()
-	return sub
-}
-
-// Report return a channel for collecting report message
-func (c *Config) Report() chan<- interface{} {
-	return c.reportCh
-}
-
-func (c *Config) readConfig() (*RawConfig, error) {
-	if _, err := os.Stat(C.Path.Config()); os.IsNotExist(err) {
+func readConfig(path string) (*rawConfig, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, err
 	}
-	data, err := ioutil.ReadFile(C.Path.Config())
+	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -100,144 +91,93 @@ func (c *Config) readConfig() (*RawConfig, error) {
 	}
 
 	// config with some default value
-	rawConfig := &RawConfig{
+	rawConfig := &rawConfig{
 		AllowLan:   false,
-		Mode:       Rule.String(),
-		LogLevel:   C.INFO.String(),
+		Mode:       T.Rule,
+		LogLevel:   log.INFO,
 		Rule:       []string{},
 		Proxy:      []map[string]interface{}{},
 		ProxyGroup: []map[string]interface{}{},
+		DNS: rawDNS{
+			Enable: false,
+		},
 	}
 	err = yaml.Unmarshal([]byte(data), &rawConfig)
 	return rawConfig, err
 }
 
 // Parse config
-func (c *Config) Parse() error {
-	cfg, err := c.readConfig()
+func Parse(path string) (*Config, error) {
+	config := &Config{}
+
+	rawCfg, err := readConfig(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	if err := c.parseGeneral(cfg); err != nil {
-		return err
-	}
-
-	if err := c.parseProxies(cfg); err != nil {
-		return err
-	}
-
-	return c.parseRules(cfg)
-}
-
-// Proxies return proxies of clash
-func (c *Config) Proxies() map[string]C.Proxy {
-	return c.proxies
-}
-
-// Rules return rules of clash
-func (c *Config) Rules() []C.Rule {
-	return c.rules
-}
-
-// SetMode change mode of clash
-func (c *Config) SetMode(mode Mode) {
-	c.general.Mode = mode
-	c.event <- &Event{Type: "mode", Payload: mode}
-}
-
-// SetLogLevel change log level of clash
-func (c *Config) SetLogLevel(level C.LogLevel) {
-	c.general.LogLevel = level
-	c.event <- &Event{Type: "log-level", Payload: level}
-}
-
-// General return clash general config
-func (c *Config) General() General {
-	return *c.general
-}
-
-// UpdateRules is a function for hot reload rules
-func (c *Config) UpdateRules() error {
-	cfg, err := c.readConfig()
+	general, err := parseGeneral(rawCfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	config.General = general
 
-	return c.parseRules(cfg)
+	proxies, err := parseProxies(rawCfg)
+	if err != nil {
+		return nil, err
+	}
+	config.Proxies = proxies
+
+	rules, err := parseRules(rawCfg)
+	if err != nil {
+		return nil, err
+	}
+	config.Rules = rules
+
+	dnsCfg, err := parseDNS(rawCfg.DNS)
+	if err != nil {
+		return nil, err
+	}
+	config.DNS = dnsCfg
+
+	return config, nil
 }
 
-func (c *Config) parseGeneral(cfg *RawConfig) error {
+func parseGeneral(cfg *rawConfig) (*General, error) {
 	port := cfg.Port
 	socksPort := cfg.SocksPort
 	redirPort := cfg.RedirPort
 	allowLan := cfg.AllowLan
-	logLevelString := cfg.LogLevel
-	modeString := cfg.Mode
+	externalController := cfg.ExternalController
+	externalUI := cfg.ExternalUI
+	secret := cfg.Secret
+	mode := cfg.Mode
+	logLevel := cfg.LogLevel
 
-	mode, exist := ModeMapping[modeString]
-	if !exist {
-		return fmt.Errorf("General.mode value invalid")
+	if externalUI != "" {
+		if !filepath.IsAbs(externalUI) {
+			externalUI = filepath.Join(C.Path.HomeDir(), externalUI)
+		}
+
+		if _, err := os.Stat(externalUI); os.IsNotExist(err) {
+			return nil, fmt.Errorf("external-ui: %s not exist", externalUI)
+		}
 	}
 
-	logLevel, exist := C.LogLevelMapping[logLevelString]
-	if !exist {
-		return fmt.Errorf("General.log-level value invalid")
+	general := &General{
+		Port:               port,
+		SocksPort:          socksPort,
+		RedirPort:          redirPort,
+		AllowLan:           allowLan,
+		Mode:               mode,
+		LogLevel:           logLevel,
+		ExternalController: externalController,
+		ExternalUI:         externalUI,
+		Secret:             secret,
 	}
-
-	c.general = &General{
-		Port:      port,
-		SocksPort: socksPort,
-		RedirPort: redirPort,
-		AllowLan:  allowLan,
-		Mode:      mode,
-		LogLevel:  logLevel,
-	}
-
-	if restAddr := cfg.ExternalController; restAddr != "" {
-		c.event <- &Event{Type: "external-controller", Payload: restAddr}
-		c.event <- &Event{Type: "secret", Payload: cfg.Secret}
-	}
-
-	c.UpdateGeneral(*c.general)
-	return nil
+	return general, nil
 }
 
-// UpdateGeneral dispatch update event
-func (c *Config) UpdateGeneral(general General) {
-	c.UpdateProxy(ProxyConfig{
-		Port:      &general.Port,
-		SocksPort: &general.SocksPort,
-		RedirPort: &general.RedirPort,
-		AllowLan:  &general.AllowLan,
-	})
-	c.event <- &Event{Type: "mode", Payload: general.Mode}
-	c.event <- &Event{Type: "log-level", Payload: general.LogLevel}
-}
-
-// UpdateProxy dispatch update proxy event
-func (c *Config) UpdateProxy(pc ProxyConfig) {
-	if pc.AllowLan != nil {
-		c.general.AllowLan = *pc.AllowLan
-	}
-
-	c.general.Port = *or(pc.Port, &c.general.Port)
-	if c.general.Port != 0 && (pc.AllowLan != nil || pc.Port != nil) {
-		c.event <- &Event{Type: "http-addr", Payload: genAddr(c.general.Port, c.general.AllowLan)}
-	}
-
-	c.general.SocksPort = *or(pc.SocksPort, &c.general.SocksPort)
-	if c.general.SocksPort != 0 && (pc.AllowLan != nil || pc.SocksPort != nil) {
-		c.event <- &Event{Type: "socks-addr", Payload: genAddr(c.general.SocksPort, c.general.AllowLan)}
-	}
-
-	c.general.RedirPort = *or(pc.RedirPort, &c.general.RedirPort)
-	if c.general.RedirPort != 0 && (pc.AllowLan != nil || pc.RedirPort != nil) {
-		c.event <- &Event{Type: "redir-addr", Payload: genAddr(c.general.RedirPort, c.general.AllowLan)}
-	}
-}
-
-func (c *Config) parseProxies(cfg *RawConfig) error {
+func parseProxies(cfg *rawConfig) (map[string]C.Proxy, error) {
 	proxies := make(map[string]C.Proxy)
 	proxiesConfig := cfg.Proxy
 	groupsConfig := cfg.ProxyGroup
@@ -251,11 +191,11 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 	for idx, mapping := range proxiesConfig {
 		proxyType, existType := mapping["type"].(string)
 		if !existType {
-			return fmt.Errorf("Proxy %d missing type", idx)
+			return nil, fmt.Errorf("Proxy %d missing type", idx)
 		}
 
 		var proxy C.Proxy
-		var err error
+		err := fmt.Errorf("can't parse")
 		switch proxyType {
 		case "ss":
 			ssOption := &adapters.ShadowSocksOption{}
@@ -271,6 +211,13 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 				break
 			}
 			proxy = adapters.NewSocks5(*socksOption)
+		case "http":
+			httpOption := &adapters.HttpOption{}
+			err = decoder.Decode(mapping, httpOption)
+			if err != nil {
+				break
+			}
+			proxy = adapters.NewHttp(*httpOption)
 		case "vmess":
 			vmessOption := &adapters.VmessOption{}
 			err = decoder.Decode(mapping, vmessOption)
@@ -279,15 +226,15 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 			}
 			proxy, err = adapters.NewVmess(*vmessOption)
 		default:
-			return fmt.Errorf("Unsupport proxy type: %s", proxyType)
+			return nil, fmt.Errorf("Unsupport proxy type: %s", proxyType)
 		}
 
 		if err != nil {
-			return fmt.Errorf("Proxy [%d]: %s", idx, err.Error())
+			return nil, fmt.Errorf("Proxy [%d]: %s", idx, err.Error())
 		}
 
 		if _, exist := proxies[proxy.Name()]; exist {
-			return fmt.Errorf("Proxy %s is the duplicate name", proxy.Name())
+			return nil, fmt.Errorf("Proxy %s is the duplicate name", proxy.Name())
 		}
 		proxies[proxy.Name()] = proxy
 	}
@@ -297,14 +244,16 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 		groupType, existType := mapping["type"].(string)
 		groupName, existName := mapping["name"].(string)
 		if !existType && existName {
-			return fmt.Errorf("ProxyGroup %d: missing type or name", idx)
+			return nil, fmt.Errorf("ProxyGroup %d: missing type or name", idx)
 		}
 
 		if _, exist := proxies[groupName]; exist {
-			return fmt.Errorf("ProxyGroup %s: the duplicate name", groupName)
+			return nil, fmt.Errorf("ProxyGroup %s: the duplicate name", groupName)
 		}
 		var group C.Proxy
-		var err error
+		ps := []C.Proxy{}
+
+		err := fmt.Errorf("can't parse")
 		switch groupType {
 		case "url-test":
 			urlTestOption := &adapters.URLTestOption{}
@@ -313,9 +262,9 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 				break
 			}
 
-			ps, err := getProxies(proxies, urlTestOption.Proxies)
+			ps, err = getProxies(proxies, urlTestOption.Proxies)
 			if err != nil {
-				return fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
+				return nil, fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
 			}
 			group, err = adapters.NewURLTest(*urlTestOption, ps)
 		case "select":
@@ -325,9 +274,9 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 				break
 			}
 
-			ps, err := getProxies(proxies, selectorOption.Proxies)
+			ps, err = getProxies(proxies, selectorOption.Proxies)
 			if err != nil {
-				return fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
+				return nil, fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
 			}
 			group, err = adapters.NewSelector(selectorOption.Name, ps)
 		case "fallback":
@@ -337,115 +286,155 @@ func (c *Config) parseProxies(cfg *RawConfig) error {
 				break
 			}
 
-			ps, err := getProxies(proxies, fallbackOption.Proxies)
+			ps, err = getProxies(proxies, fallbackOption.Proxies)
 			if err != nil {
-				return fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
+				return nil, fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
 			}
 			group, err = adapters.NewFallback(*fallbackOption, ps)
+		case "load-balance":
+			loadBalanceOption := &adapters.LoadBalanceOption{}
+			err = decoder.Decode(mapping, loadBalanceOption)
+			if err != nil {
+				break
+			}
+
+			ps, err = getProxies(proxies, loadBalanceOption.Proxies)
+			if err != nil {
+				return nil, fmt.Errorf("ProxyGroup %s: %s", groupName, err.Error())
+			}
+			group, err = adapters.NewLoadBalance(loadBalanceOption.Name, ps)
 		}
 		if err != nil {
-			return fmt.Errorf("Proxy %s: %s", groupName, err.Error())
+			return nil, fmt.Errorf("Proxy %s: %s", groupName, err.Error())
 		}
 		proxies[groupName] = group
 	}
 
-	var ps []C.Proxy
+	ps := []C.Proxy{}
 	for _, v := range proxies {
 		ps = append(ps, v)
 	}
 
 	proxies["GLOBAL"], _ = adapters.NewSelector("GLOBAL", ps)
-
-	// close old goroutine
-	for _, proxy := range c.proxies {
-		switch raw := proxy.(type) {
-		case *adapters.URLTest:
-			raw.Close()
-		case *adapters.Fallback:
-			raw.Close()
-		}
-	}
-	c.proxies = proxies
-	c.event <- &Event{Type: "proxies", Payload: proxies}
-	return nil
+	return proxies, nil
 }
 
-func (c *Config) parseRules(cfg *RawConfig) error {
+func parseRules(cfg *rawConfig) ([]C.Rule, error) {
 	rules := []C.Rule{}
 
 	rulesConfig := cfg.Rule
 	// parse rules
-	for _, line := range rulesConfig {
-		rule := strings.Split(line, ",")
-		if len(rule) < 3 {
-			continue
+	for idx, line := range rulesConfig {
+		rule := trimArr(strings.Split(line, ","))
+		var (
+			payload string
+			target  string
+		)
+
+		switch len(rule) {
+		case 2:
+			target = rule[1]
+		case 3:
+			payload = rule[1]
+			target = rule[2]
+		default:
+			return nil, fmt.Errorf("Rules[%d] [- %s] error: format invalid", idx, line)
 		}
+
 		rule = trimArr(rule)
 		switch rule[0] {
 		case "DOMAIN":
-			rules = append(rules, R.NewDomain(rule[1], rule[2]))
+			rules = append(rules, R.NewDomain(payload, target))
 		case "DOMAIN-SUFFIX":
-			rules = append(rules, R.NewDomainSuffix(rule[1], rule[2]))
+			rules = append(rules, R.NewDomainSuffix(payload, target))
 		case "DOMAIN-KEYWORD":
-			rules = append(rules, R.NewDomainKeyword(rule[1], rule[2]))
+			rules = append(rules, R.NewDomainKeyword(payload, target))
 		case "GEOIP":
-			rules = append(rules, R.NewGEOIP(rule[1], rule[2]))
+			rules = append(rules, R.NewGEOIP(payload, target))
 		case "IP-CIDR", "IP-CIDR6":
-			rules = append(rules, R.NewIPCIDR(rule[1], rule[2]))
+			rules = append(rules, R.NewIPCIDR(payload, target, false))
+		case "SOURCE-IP-CIDR":
+			rules = append(rules, R.NewIPCIDR(payload, target, true))
+		case "MATCH":
+			fallthrough
 		case "FINAL":
-			rules = append(rules, R.NewFinal(rule[2]))
+			rules = append(rules, R.NewFinal(target))
 		}
 	}
 
-	c.rules = rules
-	c.event <- &Event{Type: "rules", Payload: rules}
-	return nil
+	return rules, nil
 }
 
-func (c *Config) handleResponseMessage() {
-	for elm := range c.reportCh {
-		event := elm.(*Event)
-		switch event.Type {
-		case "http-addr":
-			if event.Payload.(bool) == false {
-				log.Errorf("Listening HTTP proxy at %d error", c.general.Port)
-				c.general.Port = 0
-			}
-		case "socks-addr":
-			if event.Payload.(bool) == false {
-				log.Errorf("Listening SOCKS proxy at %d error", c.general.SocksPort)
-				c.general.SocksPort = 0
-			}
-		case "redir-addr":
-			if event.Payload.(bool) == false {
-				log.Errorf("Listening Redir proxy at %d error", c.general.RedirPort)
-				c.general.RedirPort = 0
-			}
+func hostWithDefaultPort(host string, defPort string) (string, error) {
+	if !strings.Contains(host, ":") {
+		host += ":"
+	}
+
+	hostname, port, err := net.SplitHostPort(host)
+	if err != nil {
+		return "", err
+	}
+
+	if port == "" {
+		port = defPort
+	}
+
+	return net.JoinHostPort(hostname, port), nil
+}
+
+func parseNameServer(servers []string) ([]dns.NameServer, error) {
+	nameservers := []dns.NameServer{}
+
+	for idx, server := range servers {
+		// parse without scheme .e.g 8.8.8.8:53
+		if host, err := hostWithDefaultPort(server, "53"); err == nil {
+			nameservers = append(
+				nameservers,
+				dns.NameServer{Addr: host},
+			)
+			continue
 		}
+
+		u, err := url.Parse(server)
+		if err != nil {
+			return nil, fmt.Errorf("DNS NameServer[%d] format error: %s", idx, err.Error())
+		}
+
+		if u.Scheme != "tls" {
+			return nil, fmt.Errorf("DNS NameServer[%d] unsupport scheme: %s", idx, u.Scheme)
+		}
+
+		host, err := hostWithDefaultPort(u.Host, "853")
+		nameservers = append(
+			nameservers,
+			dns.NameServer{
+				Net:  "tcp-tls",
+				Addr: host,
+			},
+		)
 	}
+
+	return nameservers, nil
 }
 
-func newConfig() *Config {
-	event := make(chan interface{})
-	reportCh := make(chan interface{})
-	config := &Config{
-		general:    &General{},
-		proxies:    make(map[string]C.Proxy),
-		rules:      []C.Rule{},
-		lastUpdate: time.Now(),
-
-		event:      event,
-		reportCh:   reportCh,
-		observable: observable.NewObservable(event),
+func parseDNS(cfg rawDNS) (*DNS, error) {
+	if cfg.Enable && len(cfg.NameServer) == 0 {
+		return nil, fmt.Errorf("If DNS configuration is turned on, NameServer cannot be empty")
 	}
-	go config.handleResponseMessage()
-	return config
-}
 
-// Instance return singleton instance of Config
-func Instance() *Config {
-	once.Do(func() {
-		config = newConfig()
-	})
-	return config
+	dnsCfg := &DNS{
+		Enable:       cfg.Enable,
+		Listen:       cfg.Listen,
+		EnhancedMode: cfg.EnhancedMode,
+	}
+
+	if nameserver, err := parseNameServer(cfg.NameServer); err == nil {
+		dnsCfg.NameServer = nameserver
+	}
+
+	if fallback, err := parseNameServer(cfg.Fallback); err == nil {
+		dnsCfg.Fallback = fallback
+	}
+
+	return dnsCfg, nil
 }

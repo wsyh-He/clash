@@ -1,7 +1,9 @@
-package hub
+package route
 
 import (
 	"net/http"
+
+	T "github.com/Dreamacro/clash/tunnel"
 
 	"github.com/go-chi/chi"
 	"github.com/go-chi/render"
@@ -10,7 +12,6 @@ import (
 func ruleRouter() http.Handler {
 	r := chi.NewRouter()
 	r.Get("/", getRules)
-	r.Put("/", updateRules)
 	return r
 }
 
@@ -20,14 +21,10 @@ type Rule struct {
 	Proxy   string `json:"proxy"`
 }
 
-type GetRulesResponse struct {
-	Rules []Rule `json:"rules"`
-}
-
 func getRules(w http.ResponseWriter, r *http.Request) {
-	rawRules := cfg.Rules()
+	rawRules := T.Instance().Rules()
 
-	var rules []Rule
+	rules := []Rule{}
 	for _, rule := range rawRules {
 		rules = append(rules, Rule{
 			Type:    rule.RuleType().String(),
@@ -36,20 +33,7 @@ func getRules(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.WriteHeader(http.StatusOK)
-	render.JSON(w, r, GetRulesResponse{
-		Rules: rules,
+	render.JSON(w, r, render.M{
+		"rules": rules,
 	})
-}
-
-func updateRules(w http.ResponseWriter, r *http.Request) {
-	err := cfg.UpdateRules()
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		render.JSON(w, r, Error{
-			Error: err.Error(),
-		})
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

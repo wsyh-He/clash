@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -18,11 +19,12 @@ type websocketConn struct {
 	remoteAddr net.Addr
 }
 
-type websocketConfig struct {
-	host      string
-	path      string
-	tls       bool
-	tlsConfig *tls.Config
+type WebsocketConfig struct {
+	Host      string
+	Path      string
+	Headers   map[string]string
+	TLS       bool
+	TLSConfig *tls.Config
 }
 
 // Read implements net.Conn.Read()
@@ -100,7 +102,7 @@ func (wsc *websocketConn) SetWriteDeadline(t time.Time) error {
 	return wsc.conn.SetWriteDeadline(t)
 }
 
-func newWebsocketConn(conn net.Conn, c *websocketConfig) (net.Conn, error) {
+func NewWebsocketConn(conn net.Conn, c *WebsocketConfig) (net.Conn, error) {
 	dialer := &websocket.Dialer{
 		NetDial: func(network, addr string) (net.Conn, error) {
 			return conn, nil
@@ -111,23 +113,30 @@ func newWebsocketConn(conn net.Conn, c *websocketConfig) (net.Conn, error) {
 	}
 
 	scheme := "ws"
-	if c.tls {
+	if c.TLS {
 		scheme = "wss"
-		dialer.TLSClientConfig = c.tlsConfig
+		dialer.TLSClientConfig = c.TLSConfig
 	}
 
-	host, port, err := net.SplitHostPort(c.host)
+	host, port, _ := net.SplitHostPort(c.Host)
 	if (scheme == "ws" && port != "80") || (scheme == "wss" && port != "443") {
-		host = c.host
+		host = c.Host
 	}
 
 	uri := url.URL{
 		Scheme: scheme,
 		Host:   host,
-		Path:   c.path,
+		Path:   c.Path,
 	}
 
-	wsConn, resp, err := dialer.Dial(uri.String(), nil)
+	headers := http.Header{}
+	if c.Headers != nil {
+		for k, v := range c.Headers {
+			headers.Set(k, v)
+		}
+	}
+
+	wsConn, resp, err := dialer.Dial(uri.String(), headers)
 	if err != nil {
 		var reason string
 		if resp != nil {
